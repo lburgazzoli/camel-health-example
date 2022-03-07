@@ -1,44 +1,101 @@
 package io.github.lburgazzoli.camel.health;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.reflect.Field;
 import java.util.Map;
 import java.util.Properties;
-import java.util.concurrent.ConcurrentHashMap;
 
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
+import org.apache.camel.health.HealthCheckResultBuilder;
+import org.apache.camel.impl.health.AbstractHealthCheck;
+import org.apache.camel.util.ReflectionHelper;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.internals.Sender;
 
-import org.apache.camel.CamelContext;
-import org.apache.kafka.clients.producer.Producer;
-import org.eclipse.microprofile.health.HealthCheck;
-import org.eclipse.microprofile.health.HealthCheckResponse;
-import org.eclipse.microprofile.health.Readiness;
 
-@Readiness
-@ApplicationScoped
-public class ExampleKafkaProducersHealthCheck implements HealthCheck {
-    public static final String NAME = "camel-kafka-producers-readiness-checks";
+public class ExampleKafkaProducersHealthCheck extends AbstractHealthCheck {
+    public static final String DATA_ERROR_MESSAGE = "error.message";
 
-    private final Map<String, Holder> clients = new ConcurrentHashMap<>();
+    private final KafkaProducer<?, ?> client;
+    private final Properties configuration;
+    private final Field senderField;
+    private final Field networkClientField;
 
-    @Inject
-    CamelContext context;
+    public ExampleKafkaProducersHealthCheck(String id, KafkaProducer<?, ?> client, Properties configuration) {
+        super("example-camel-kafka", id);
+        this.client = client;
+        this.configuration = configuration;
+
+        MethodHandles.Lookup lookup = MethodHandles.lookup();
+
+        Field sh = null;
+        try {
+            sh = KafkaProducer.class.getDeclaredField("sender");
+        } catch (Exception e) {
+            // empty
+        }
+
+        Field nh = null;
+        try {
+            nh = Sender.class.getDeclaredField("client");
+        } catch (Exception e) {
+            // empty
+        }
+
+        this.senderField = sh;
+        this.networkClientField = nh;
+
+    }
 
     @Override
-    public HealthCheckResponse call() {
-        return  HealthCheckResponse.named(NAME).up().build();
+    public boolean isReadiness() {
+        return true;
     }
 
-    public void track(String uri, Producer client, Properties configuration) {
-        clients.put(uri, new Holder(client, configuration));
+    @Override
+    public boolean isLiveness() {
+        return false;
     }
 
-    private static class Holder {
-        private final Producer client;
-        private final Properties configuration;
+    @Override
+    protected void doCall(HealthCheckResultBuilder builder, Map<String, Object> options) {
+        try {
+            boolean down = false;
 
-        public Holder(Producer client, Properties configuration) {
-            this.client = client;
-            this.configuration = configuration;
+            if (client == null ) {
+                builder.detail(DATA_ERROR_MESSAGE, "KafkaConsumer has not been created");
+                down = true;
+            } else if (this.senderField != null && this.networkClientField != null) {
+                Sender sender = (Sender) ReflectionHelper.getField(this.senderField, this.client);
+                ConsumerNetworkClient nc = (ConsumerNetworkClient) ReflectionHelper.getField(this.networkClientField, sender);
+                if (!nc.hasReadyNodes(System.currentTimeMillis())) {
+                    builder.detail(DATA_ERROR_MESSAGE, "KafkaConsumer is not ready");
+                    down = true;
+                }
+            } else {
+                builder.detail(DATA_ERROR_MESSAGE, "KafkaConsumer has not been created");
+                down = true;
+            }
+
+            if (down) {
+                builder.detail("bootstrap.servers", configuration.getProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG));
+
+                String cid = configuration.getProperty(ConsumerConfig.CLIENT_ID_CONFIG);
+                if (cid != null) {
+                    builder.detail("client.id", cid);
+                }
+                String gid = configuration.getProperty(ConsumerConfig.GROUP_ID_CONFIG);
+                if (gid != null) {
+                    builder.detail("group.id", gid);
+                }
+
+                builder.down();
+            } else {
+                builder.up();
+            }
+        } catch (Throwable e) {
+            builder.up();
         }
     }
 }

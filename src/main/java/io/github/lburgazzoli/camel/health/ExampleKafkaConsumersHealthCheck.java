@@ -1,79 +1,83 @@
 package io.github.lburgazzoli.camel.health;
 
+import java.lang.reflect.Field;
 import java.util.Map;
 import java.util.Properties;
-import java.util.concurrent.ConcurrentHashMap;
 
-import javax.enterprise.context.ApplicationScoped;
-
+import org.apache.camel.health.HealthCheckResultBuilder;
+import org.apache.camel.impl.health.AbstractHealthCheck;
 import org.apache.camel.util.ReflectionHelper;
-import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient;
-import org.eclipse.microprofile.health.HealthCheck;
-import org.eclipse.microprofile.health.HealthCheckResponse;
-import org.eclipse.microprofile.health.Readiness;
 
-@Readiness
-@ApplicationScoped
-public class ExampleKafkaConsumersHealthCheck implements HealthCheck {
-    public static final String NAME = "camel-kafka-consumers-readiness-checks";
+public class ExampleKafkaConsumersHealthCheck extends AbstractHealthCheck {
     public static final String DATA_ERROR_MESSAGE = "error.message";
 
-    private final Map<String, Holder> clients = new ConcurrentHashMap<>();
+    private final KafkaConsumer<?, ?> client;
+    private final Properties configuration;
+    private final Field networkClientField;
 
-    @Override
-    public HealthCheckResponse call() {
-        var builder = HealthCheckResponse.named(NAME).up();
+    public ExampleKafkaConsumersHealthCheck(String id, KafkaConsumer<?, ?> client, Properties configuration) {
+        super("example-camel-kafka", id);
+        this.client = client;
+        this.configuration = configuration;
 
-        for (Holder holder: clients.values()) {
-            if (holder.client == null) {
-
-            }
-            try {
-                if (holder.client != null) {
-                    ConsumerNetworkClient nc = (ConsumerNetworkClient) ReflectionHelper.getField(
-                        holder.client.getClass().getDeclaredField("client"),
-                        holder.client);
-
-                    if (!nc.hasReadyNodes(System.currentTimeMillis())) {
-                        builder.down();
-                        builder.withData(DATA_ERROR_MESSAGE, "KafkaConsumer is not ready");
-                    }
-                } else {
-                    builder.down();
-                    builder.withData(DATA_ERROR_MESSAGE, "KafkaConsumer has not been created");
-                }
-
-                builder.withData("bootstrap.servers", holder.configuration.getProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG));
-
-                String cid = holder.configuration.getProperty(ConsumerConfig.CLIENT_ID_CONFIG);
-                if (cid != null) {
-                    builder.withData("client.id", cid);
-                }
-                String gid = holder.configuration.getProperty(ConsumerConfig.GROUP_ID_CONFIG);
-                if (gid != null) {
-                    builder.withData("group.id", gid);
-                }
-            } catch (NoSuchFieldException e) {
-                builder.up();
-            }
+        Field nhField = null;
+        try {
+            nhField = client.getClass().getDeclaredField("client");
+        } catch (Exception e) {
+            // empty
         }
 
-        return builder.build();
+        this.networkClientField = nhField;
+
     }
 
-    public void track(String uri, Consumer client, Properties configuration) {
-        clients.put(uri, new Holder(client, configuration));
+    @Override
+    public boolean isReadiness() {
+        return true;
     }
 
-    private static class Holder {
-        private final Consumer client;
-        private final Properties configuration;
+    @Override
+    public boolean isLiveness() {
+        return false;
+    }
 
-        public Holder(Consumer client, Properties configuration) {
-            this.client = client;
-            this.configuration = configuration;
+    @Override
+    protected void doCall(HealthCheckResultBuilder builder, Map<String, Object> options) {
+        try {
+            boolean down = false;
+
+            if (client == null) {
+                builder.detail(DATA_ERROR_MESSAGE, "KafkaConsumer has not been created");
+                down = true;
+            } else if (this.networkClientField != null) {
+                ConsumerNetworkClient nc = (ConsumerNetworkClient) ReflectionHelper.getField(this.networkClientField, this.client);
+                if (!nc.hasReadyNodes(System.currentTimeMillis())) {
+                    builder.detail(DATA_ERROR_MESSAGE, "KafkaConsumer is not ready");
+                    down = true;
+                }
+            }
+
+            if (down) {
+                builder.detail("bootstrap.servers", configuration.getProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG));
+
+                String cid = configuration.getProperty(ConsumerConfig.CLIENT_ID_CONFIG);
+                if (cid != null) {
+                    builder.detail("client.id", cid);
+                }
+                String gid = configuration.getProperty(ConsumerConfig.GROUP_ID_CONFIG);
+                if (gid != null) {
+                    builder.detail("group.id", gid);
+                }
+
+                builder.down();
+            } else {
+                builder.up();
+            }
+        } catch (Throwable e) {
+            builder.up();
         }
     }
 }

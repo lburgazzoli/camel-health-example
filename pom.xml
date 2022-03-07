@@ -126,7 +126,9 @@
                         <goals>
                             <goal>jandex</goal>
                             <goal>generate-component</goal>
+                            <!--
                             <goal>generate-configurer</goal>
+                            -->
                         </goals>
                     </execution>
                 </executions>
