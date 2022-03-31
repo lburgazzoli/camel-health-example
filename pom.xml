@@ -97,6 +97,7 @@
                 <configuration>
                     <generateGitPropertiesFile>true</generateGitPropertiesFile>
                     <generateGitPropertiesFilename>${project.build.outputDirectory}/git.properties</generateGitPropertiesFilename>
+                    <tags>true</tags>
                 </configuration>
             </plugin>
             <plugin>
